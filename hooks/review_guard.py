@@ -10,6 +10,9 @@ A command passes when that hash is HEAD. One more commit and it no longer is.
 
 A command is guarded when its text
 - runs `git ... push ... main` (`main`, `+main`, `HEAD:main`, `origin/main`), or
+- runs a `git ... push` that switches git's hooks off (`--no-verify`,
+  `core.hooksPath`), whatever it pushes: that push would skip the exact
+  check in githooks/pre-push, so it gets this one, or
 - names a deploy workflow and says `workflow ... run` or `dispatches`
   anywhere (gh, gh api, curl, xargs, a line piped into bash).
 
@@ -24,6 +27,9 @@ brace expansion), a quoted `;` or `|` between git and push, and a bare
 `git push` or `--all` on main. For pushes, githooks/pre-push catches those:
 git runs it with the real hash, whatever the command looked like. This hook
 is the early stop, and the only gate on a deploy command.
+
+For a deploy it checks the checkout the command is run from. It does not
+know which commit the workflow will build (`--ref another-branch`).
 """
 
 from __future__ import annotations
@@ -44,6 +50,11 @@ DEPLOY_VERB = re.compile(r"\bworkflow\b[^\n;&|]*\brun\b|dispatches", re.IGNORECA
 # `GIT` runs git on a case-insensitive disk; branch names are exact.
 PUSH = re.compile(
     rf"\b(?i:git)\b[^\n;&|]*\bpush\b[^\n;&|]*[\s:/+(`]{re.escape(BRANCH)}(?=$|[\s;&|)`<>])"
+)
+# A push that skips githooks/pre-push. `-n` is --dry-run for push, not this.
+PUSH_UNCHECKED = re.compile(
+    r"\bgit\b[^\n;&|]*\bpush\b[^\n;&|]*--no-verify\b|hookspath[^\n;&|]*\bpush\b",
+    re.IGNORECASE,
 )
 # Backslashes and quotes (`$'..'` and `$".."` too), which the shell drops
 # from a word before it runs it: `"deploy".yml`, `pu\sh`.
@@ -66,7 +77,9 @@ def _joined(cmd: str) -> str:
 def is_guarded(cmd: str) -> bool:
     text = _QUOTING.sub("", _joined(cmd))
     return bool(
-        (DEPLOY_NAME.search(text) and DEPLOY_VERB.search(text)) or PUSH.search(text)
+        (DEPLOY_NAME.search(text) and DEPLOY_VERB.search(text))
+        or PUSH.search(text)
+        or PUSH_UNCHECKED.search(text)
     )
 
 

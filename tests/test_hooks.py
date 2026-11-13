@@ -107,6 +107,11 @@ class ReviewGuard(Repos):
             "an escaped letter in push": "git pu\\sh origin main",
             "a redirect glued to main": "git push origin main>/dev/null 2>&1",
             "an upper-case GIT": "GIT push origin main",
+            "a bare push that skips git's hooks": "git push --no-verify",
+            "a feature push that skips git's hooks": "git push --no-verify origin feature",
+            "a push with hooksPath switched off": "git -c core.hooksPath=/dev/null push origin HEAD",
+            "the same with the config quoted": 'git -c "core.hookspath=" push',
+            "hooksPath switched off through the environment": "GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=core.hooksPath GIT_CONFIG_VALUE_0= git push",
             "a deploy": "gh workflow run deploy.yml",
             "a deploy on a later line": "git status\ngh workflow run deploy.yml -f target=prod",
             "a deploy after cd": "cd x && gh workflow run deploy.yml",
@@ -163,6 +168,8 @@ class ReviewGuard(Repos):
         for command in [
             "git push origin feature",
             "git push --dry-run origin feature",
+            "git push -n origin feature",
+            "git config core.hooksPath githooks",
             "gh workflow run tests.yml",
             "ls deploy/",
             "cat <<'EOF'\nit's the git push step\nEOF",
@@ -221,21 +228,63 @@ class DirtyTreeGuard(Repos):
         "git checkout -- src/app.py",
         "git checkout main",
         "git restore src/app.py",
+        "git restore --staged --worktree src/app.py",
+        "git restore -SW src/app.py",
         "git reset --hard",
-        "git reset --hard HEAD~1",
-        "git stash drop",
-        "git stash clear",
-        "git branch -D feature",
+        "git reset -q --hard",
+        "git reset HEAD --hard",
+        "git clean -fd",
+        "git clean -xfd",
+        "git switch -f main",
+        "git switch --discard-changes main",
+        'git "checkout" .',
+        "git \\\n  checkout .",
         "git -C . checkout .",
+        "git -c a.b=c checkout .",
+        "GIT checkout .",
+        "sudo git checkout .",
         "npm test && git checkout .",
+        "git status\ngit checkout .",
         "git checkout -b fix && git checkout .",
+        "bash -c 'git checkout .'",
+        "eval 'git reset --hard'",
+        "x=$(git reset --hard)",
+        "(git clean -fd)",
+        "echo . | xargs git checkout",
+        "git checkout . && echo $'it\\'s'",
     ]
+    HARMLESS = [
+        "git checkout -b feature",
+        "git checkout -q -b feature",
+        "git checkout --track -b feature origin/feature",
+        "git checkout -B feature",
+        "git restore --staged f.txt",
+        "git reset --soft HEAD~1",
+        "git reset HEAD f.txt",
+        "git clean -n",
+        "git clean -nfd",
+        "git switch main",
+        "git switch -c feature",
+        "git status",
+        "git stash",
+        "git stash pop",
+        'git commit -am "fix checkout flow"',
+        'git commit -m "undo the git reset --hard in deploy.sh"',
+        "git grep checkout",
+        "git log --oneline -- restore.py",
+        "echo checkout",
+    ]
+    DROPS_A_STASH = ["git stash drop", "git stash clear", "git stash drop stash@{0}"]
+
+    def dirty(self) -> str:
+        (Path(self.unreviewed) / "edit.txt").write_text("uncommitted\n")
+        return self.unreviewed
 
     def test_blocks_destructive_commands_on_a_dirty_tree(self) -> None:
-        (Path(self.unreviewed) / "edit.txt").write_text("uncommitted\n")
+        repo = self.dirty()
         for command in self.DESTRUCTIVE:
             with self.subTest(command):
-                self.assertEqual(run_hook(DIRTY_GUARD, command, self.unreviewed), BLOCK)
+                self.assertEqual(run_hook(DIRTY_GUARD, command, repo), BLOCK)
 
     def test_allows_them_on_a_clean_tree(self) -> None:
         for command in self.DESTRUCTIVE:
@@ -243,18 +292,16 @@ class DirtyTreeGuard(Repos):
                 self.assertEqual(run_hook(DIRTY_GUARD, command, self.unreviewed), ALLOW)
 
     def test_allows_harmless_commands_on_a_dirty_tree(self) -> None:
-        (Path(self.unreviewed) / "edit.txt").write_text("uncommitted\n")
-        for command in [
-            "git checkout -b feature",
-            "git status",
-            "git stash",
-            "git reset --soft HEAD~1",
-            "git branch -d merged",
-            "git commit -am wip",
-            "echo checkout",
-        ]:
+        repo = self.dirty()
+        for command in self.HARMLESS:
             with self.subTest(command):
-                self.assertEqual(run_hook(DIRTY_GUARD, command, self.unreviewed), ALLOW)
+                self.assertEqual(run_hook(DIRTY_GUARD, command, repo), ALLOW)
+
+    def test_never_lets_a_stash_be_dropped(self) -> None:
+        # After `git stash` the tree is clean, so a dirty-tree rule would let it go.
+        for command in self.DROPS_A_STASH:
+            with self.subTest(command):
+                self.assertEqual(run_hook(DIRTY_GUARD, command, self.unreviewed), BLOCK)
 
 
 class PrePushAndMark(Repos):
@@ -283,6 +330,15 @@ class PrePushAndMark(Repos):
         git(self.unreviewed, "config", "push.default", "current")
         self.assertEqual(run_hook(REVIEW_GUARD, "git push", self.unreviewed), ALLOW)
         self.assertNotEqual(git(self.unreviewed, "push", "-q", "origin").returncode, 0)
+
+    def test_the_text_guard_stops_a_push_that_would_skip_this_hook(self) -> None:
+        skip = "git -c core.hooksPath=/dev/null push origin HEAD"
+        self.assertEqual(run_hook(REVIEW_GUARD, skip, self.unreviewed), BLOCK)
+
+    def test_says_why_without_a_shell_error_when_nothing_was_reviewed(self) -> None:
+        refused = git(self.unreviewed, "push", "-q", "origin", "main").stderr
+        self.assertIn("the review is for no commit", refused)
+        self.assertNotIn("No such file", refused)
 
     def test_leaves_other_branches_alone(self) -> None:
         git(self.unreviewed, "switch", "-q", "-c", "feature")

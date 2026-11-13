@@ -1,0 +1,28 @@
+#!/usr/bin/env bash
+# The exact check. Git runs this before every push and passes, on stdin, the
+# commit each ref would receive. A push to main is refused unless
+# .claude/.review-passed holds exactly that commit's hash.
+#
+# hooks/review_guard.py reads command text and can be walked past; this
+# cannot be, short of `git push --no-verify`.
+#
+# Install once per clone:  git config core.hooksPath githooks
+
+set -uo pipefail
+
+branch=main
+marker="$(git rev-parse --show-toplevel)/.claude/.review-passed"
+zero=$(git hash-object --stdin </dev/null | tr '0-9a-f' '0')
+
+while read -r _local_ref local_sha remote_ref _remote_sha; do
+  [ "$remote_ref" = "refs/heads/$branch" ] || continue
+  [ "$local_sha" = "$zero" ] && continue  # deleting the branch
+  reviewed=$(tr -d '[:space:]' <"$marker" 2>/dev/null || true)
+  if [ "$reviewed" != "$local_sha" ]; then
+    shown=${reviewed:0:8}
+    echo "[pre-push] Blocked: pushing ${local_sha:0:8} to $branch, but the review is for ${shown:-no commit}." \
+      "Review this commit first." >&2
+    exit 1
+  fi
+done
+exit 0

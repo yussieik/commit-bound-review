@@ -61,7 +61,8 @@ flowchart LR
 
 | File | Runs | What it does |
 |---|---|---|
-| `bin/mark-reviewed` | at the end of your review | Writes HEAD's hash to `.claude/.review-passed`. Refuses on a dirty tree. |
+| `bin/mark-reviewed` | at the end of your review | Writes HEAD's hash to `.claude/.review-passed`, and names any uncommitted paths: the stamp covers the commit, not the working tree. |
+| `examples/review-before-push/` | when the user asks for a push or a deploy | An example review as a Claude Code skill: three review passes in fresh context, fix, review the fixes, run the checks on the commit, then stamp. |
 | `hooks/review_guard.py` | before each Bash call of the agent | Early stop: a line that pushes to `main`, runs a deploy workflow, or pushes with git's hooks switched off is refused unless the marker is HEAD. |
 | `githooks/pre-push` | in git, before every push | The exact check: git passes the hash being pushed, and it must be the marker's. |
 | `hooks/dirty_tree_guard.py` | before each Bash call of the agent | Refuses the commands of rule 2. `checkout -b`, `checkout --ours/--theirs`, `restore --staged`, `clean -n`, a plain `switch` and everything else pass. |
@@ -71,35 +72,35 @@ in the agent sees only the text of a command, so it can stop early and explain
 why, but it can be walked past. Git knows which commit it is pushing, whatever
 the command looked like.
 
-This repository ships the lock, not the review. What "reviewed" means is
-yours to decide: a review skill, a script, a person. Mine is a skill that
-runs separate code, simplicity and security reviews in fresh context, fixes
-what must be fixed, reviews again, and stamps the commit only after a clean
-last pass.
+The lock is the point of this repository; what "reviewed" means is yours to
+decide. [`examples/review-before-push`](examples/review-before-push/SKILL.md)
+is a trimmed version of the skill I use: separate code, simplicity and
+security reviews in fresh context, must-fix findings fixed and reviewed again,
+the project's checks run on the exact commit, and the stamp only after a clean
+last pass. Replace it with a script or a person if you prefer; the guards only
+read the stamp.
 
 ## Install
 
-From a clone of this repository, in your own repository's root:
+From your own repository's root, with this one cloned anywhere:
 
 ```sh
-mkdir -p .claude/hooks githooks bin
-cp path/to/commit-bound-review/hooks/*.py .claude/hooks/
-cp path/to/commit-bound-review/githooks/pre-push githooks/
-cp path/to/commit-bound-review/bin/mark-reviewed bin/
-echo ".claude/.review-passed" >> .gitignore
-git config core.hooksPath githooks      # once per clone
+path/to/commit-bound-review/install.sh
 ```
 
-`core.hooksPath` replaces `.git/hooks` for this clone. If you already have
-hooks there or use a hook manager (husky, lefthook, pre-commit), call
-`githooks/pre-push` from your existing pre-push hook instead of setting it,
-and pass it the hook's arguments and standard input: git lists the pushed
-commits there.
+It copies the two hooks to `.claude/hooks/`, `githooks/pre-push`,
+`bin/mark-reviewed` and the example skill, adds `.claude/.review-passed` to
+`.gitignore`, writes `.claude/settings.json` if you have none, and runs
+`git config core.hooksPath githooks` for this clone. It never overwrites a
+file. Commit what it added; every other clone needs the `git config` line
+once.
 
-Commit the copied files: `bin/mark-reviewed` refuses a tree with uncommitted
-changes, these included.
+`core.hooksPath` replaces `.git/hooks`. If the clone already has a hooks path
+(husky, lefthook), the script leaves it alone: call `githooks/pre-push` from
+your existing pre-push hook, and pass it the hook's arguments and standard
+input, where git lists the pushed commits.
 
-Register the two hooks in `.claude/settings.json`
+If you already have a `.claude/settings.json`, add the two hooks to it
 ([`examples/settings.json`](examples/settings.json)):
 
 ```json
@@ -118,7 +119,7 @@ Register the two hooks in `.claude/settings.json`
 }
 ```
 
-Then make `bin/mark-reviewed` the last step of your review.
+If you write your own review, make `bin/mark-reviewed` its last step.
 
 To change the branch or what counts as a deploy, edit `BRANCH` and
 `DEPLOY_NAME` at the top of `hooks/review_guard.py` and `branch` in
@@ -186,7 +187,7 @@ subcommand and flags.
 python3 -m unittest discover tests -v
 ```
 
-21 tests, stdlib only, against real temporary git repositories:
+23 tests, stdlib only, against real temporary git repositories:
 
 - 60 command forms that must be refused from an unreviewed checkout
 - pushes and deploys allowed from a reviewed one, and refused again after one
@@ -195,6 +196,14 @@ python3 -m unittest discover tests -v
   text guard cannot see
 - 30 destructive forms refused on a dirty tree and allowed on a clean one, 21
   harmless ones allowed on a dirty tree, and 5 refused even on a clean tree
+- `install.sh` into a fresh repository, and into one that already has
+  settings and a hooks path
+
+The hooks were also run in a live Claude Code session (2.1.323, 13 November
+2026): `git checkout .` on a dirty tree was refused and the edit kept; a push
+of an unreviewed commit was refused and nothing reached the remote; after
+`bin/mark-reviewed` the same push went through. On the refused push the agent
+stopped and reported it, and left the marker alone.
 
 ## License
 

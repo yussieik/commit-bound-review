@@ -1,16 +1,18 @@
 #!/usr/bin/env bash
 # Stamps the review: writes HEAD's hash to .claude/.review-passed.
 # Run it as the last step of your review, after its final pass found nothing
-# that must be fixed. It refuses on a dirty tree: a review of uncommitted
-# changes is a review of no commit.
+# that must be fixed. The stamp covers the commit, not the working tree, so
+# it names any uncommitted paths: a fix the review made and never committed
+# would show up there.
 
 set -euo pipefail
 
 cd "$(git rev-parse --show-toplevel)"
-if [ -n "$(git status --porcelain)" ]; then
-  echo "mark-reviewed: the tree has uncommitted changes; commit them and review that commit." >&2
-  exit 1
-fi
 mkdir -p .claude
 git rev-parse HEAD >.claude/.review-passed
 echo "reviewed: $(cat .claude/.review-passed)"
+dirty=$(git status --porcelain)
+if [ -n "$dirty" ]; then
+  echo "not part of this commit, so not reviewed:" >&2
+  echo "$dirty" >&2
+fi

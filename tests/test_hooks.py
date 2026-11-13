@@ -23,6 +23,7 @@ REVIEW_GUARD = ROOT / "hooks" / "review_guard.py"
 DIRTY_GUARD = ROOT / "hooks" / "dirty_tree_guard.py"
 PRE_PUSH_DIR = ROOT / "githooks"
 MARK_REVIEWED = ROOT / "bin" / "mark-reviewed"
+INSTALL = ROOT / "install.sh"
 
 GIT_ENV = {
     **os.environ,
@@ -365,13 +366,52 @@ class PrePushAndMark(Repos):
         self.assertEqual(marker.read_text().strip(), head)
         self.assertEqual(self.push(self.unreviewed, "main"), 0)
 
-    def test_mark_reviewed_refuses_a_dirty_tree(self) -> None:
+    def test_mark_reviewed_names_what_the_stamp_does_not_cover(self) -> None:
+        head = commit(self.unreviewed, "work")
         (Path(self.unreviewed) / "edit.txt").write_text("uncommitted\n")
         done = subprocess.run(
-            [str(MARK_REVIEWED)], cwd=self.unreviewed, capture_output=True, check=False
+            [str(MARK_REVIEWED)],
+            cwd=self.unreviewed,
+            capture_output=True,
+            text=True,
+            check=False,
         )
-        self.assertNotEqual(done.returncode, 0)
-        self.assertFalse((Path(self.unreviewed) / ".claude" / ".review-passed").exists())
+        marker = Path(self.unreviewed) / ".claude" / ".review-passed"
+        self.assertEqual(marker.read_text().strip(), head)
+        self.assertIn("edit.txt", done.stderr)
+
+
+class Install(Repos):
+    def install(self, repo: str) -> str:
+        done = subprocess.run(
+            [str(INSTALL)], cwd=repo, capture_output=True, text=True, check=True
+        )
+        return done.stdout
+
+    def test_a_fresh_repository_is_guarded_after_one_command(self) -> None:
+        repo = self.make_repo("fresh")
+        self.install(repo)
+        git(repo, "add", "-A")
+        commit(repo, "guards")
+        self.assertEqual(run_hook(Path(repo) / ".claude/hooks/review_guard.py", "git push origin main", repo), BLOCK)
+        subprocess.run([str(Path(repo) / "bin/mark-reviewed")], cwd=repo, capture_output=True, check=True)
+        self.assertEqual(run_hook(Path(repo) / ".claude/hooks/review_guard.py", "git push origin main", repo), ALLOW)
+        self.assertEqual(git(repo, "config", "core.hooksPath").stdout.strip(), "githooks")
+        self.assertEqual(git(repo, "status", "--porcelain").stdout, "")
+        settings = json.loads((Path(repo) / ".claude/settings.json").read_text())
+        self.assertEqual(len(settings["hooks"]["PreToolUse"][0]["hooks"]), 2)
+
+    def test_it_keeps_what_is_already_there(self) -> None:
+        repo = self.make_repo("existing")
+        (Path(repo) / ".claude").mkdir()
+        (Path(repo) / ".claude/settings.json").write_text("{}\n")
+        git(repo, "config", "core.hooksPath", ".husky")
+        out = self.install(repo) + self.install(repo)
+        self.assertEqual((Path(repo) / ".claude/settings.json").read_text(), "{}\n")
+        self.assertEqual(git(repo, "config", "core.hooksPath").stdout.strip(), ".husky")
+        self.assertIn("call githooks/pre-push from your pre-push hook", out)
+        ignored = (Path(repo) / ".gitignore").read_text().splitlines()
+        self.assertEqual(ignored.count(".claude/.review-passed"), 1)
 
 
 if __name__ == "__main__":

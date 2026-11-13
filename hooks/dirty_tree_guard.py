@@ -6,13 +6,17 @@ Reads the tool-call JSON from stdin. Exit 2 blocks the call and sends stderr
 back to the agent as the reason; exit 0 allows it.
 
 Refused while the working tree has uncommitted changes:
-- `git checkout` (except `-b`, `-B`, `--orphan`, which create a branch)
+- `git checkout` (except `-b`, `-B`, `--orphan`, which create a branch, and
+  `--ours`/`--theirs`, which resolve a conflict)
 - `git restore` (except `--staged` alone, which only unstages)
 - `git reset --hard`
 - `git clean` with `-f` (except a dry run)
 - `git switch` with `-f`, `--force` or `--discard-changes`
-Refused always: `git stash drop` and `git stash clear`. A stash is
-uncommitted work too, and the tree is clean right after `git stash`.
+Refused always:
+- `git stash drop` and `git stash clear`: a stash is uncommitted work too,
+  and the tree is clean right after `git stash`
+- `git clean` with `-f` and `-x` or `-X`: it deletes ignored files (`.env`),
+  which never make a tree dirty
 
 Unlike review_guard.py this one splits the line into words, because it has
 to tell `git checkout .` from `git commit -m "fix checkout flow"`. A line
@@ -54,8 +58,8 @@ def _short(args: list[str], letter: str) -> bool:
 def verdict(subcommand: str, args: list[str]) -> str | None:
     """When this git command destroys uncommitted work, or None if never."""
     if subcommand == "checkout":
-        creates = {"-b", "-B", "--orphan"}
-        return None if creates & set(args) else ON_DIRTY_TREE
+        keeps_work = {"-b", "-B", "--orphan", "--ours", "--theirs"}
+        return None if keeps_work & set(args) else ON_DIRTY_TREE
     if subcommand == "restore":
         staged = "--staged" in args or _short(args, "S")
         worktree = "--worktree" in args or _short(args, "W")
@@ -65,7 +69,9 @@ def verdict(subcommand: str, args: list[str]) -> str | None:
     if subcommand == "clean":
         forced = "--force" in args or _short(args, "f")
         dry = "--dry-run" in args or _short(args, "n")
-        return ON_DIRTY_TREE if forced and not dry else None
+        if not forced or dry:
+            return None
+        return ALWAYS if _short(args, "x") or _short(args, "X") else ON_DIRTY_TREE
     if subcommand == "switch":
         forced = {"--force", "--discard-changes"} & set(args) or _short(args, "f")
         return ON_DIRTY_TREE if forced else None
@@ -82,6 +88,7 @@ def _segments(cmd: str) -> list[list[str]]:
         cmd.replace("\\\n", "").replace("`", " "), posix=True, punctuation_chars=True
     )
     lexer.whitespace = " \t\r"  # a newline ends a command, so keep it as a token
+    lexer.commenters = ""  # shlex would cut `echo a#b; git reset --hard` at the `#`
     segments: list[list[str]] = [[]]
     for token in lexer:
         if token and all(c in "();<>|&\n" for c in token):
@@ -111,11 +118,12 @@ def verdicts(cmd: str) -> set[str]:
                     result = verdict(word, list(rest))
                     if result:
                         found.add(result)
-        # `bash -c '...'` and `eval '...'` carry a whole line in one word.
-        if SHELLS & set(names):
-            for word in words:
-                if " " in word or "\n" in word:
-                    found |= verdicts(word)
+        # `bash -c '...'` and `eval '...'` carry a whole line in one word, and
+        # so does a quoted `"$(...)"`.
+        shell = bool(SHELLS & set(names))
+        for word in words:
+            if (" " in word or "\n" in word) and (shell or "$(" in word):
+                found |= verdicts(word)
     return found
 
 
@@ -155,7 +163,7 @@ def main() -> None:
         else os.environ.get("CLAUDE_PROJECT_DIR", os.getcwd())
     )
     if ALWAYS in found:
-        reason = "this line drops a stash, which is uncommitted work"
+        reason = "this line deletes a stash or ignored files, which no commit holds"
     elif is_dirty(base):
         reason = "destructive git command while the tree has uncommitted changes"
     else:

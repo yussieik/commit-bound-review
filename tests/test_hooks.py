@@ -170,6 +170,7 @@ class ReviewGuard(Repos):
             "git push --dry-run origin feature",
             "git push -n origin feature",
             "git config core.hooksPath githooks",
+            "git config core.hooksPath githooks  # so pre-push runs",
             "gh workflow run tests.yml",
             "ls deploy/",
             "cat <<'EOF'\nit's the git push step\nEOF",
@@ -234,7 +235,6 @@ class DirtyTreeGuard(Repos):
         "git reset -q --hard",
         "git reset HEAD --hard",
         "git clean -fd",
-        "git clean -xfd",
         "git switch -f main",
         "git switch --discard-changes main",
         'git "checkout" .',
@@ -252,12 +252,17 @@ class DirtyTreeGuard(Repos):
         "(git clean -fd)",
         "echo . | xargs git checkout",
         "git checkout . && echo $'it\\'s'",
+        'echo "$(git checkout . 2>&1)"',
+        'OUT="$(git reset --hard 2>&1)"',
+        "echo a#b; git reset --hard",
     ]
     HARMLESS = [
         "git checkout -b feature",
         "git checkout -q -b feature",
         "git checkout --track -b feature origin/feature",
         "git checkout -B feature",
+        "git checkout --theirs f.txt",
+        "git checkout --ours f.txt",
         "git restore --staged f.txt",
         "git reset --soft HEAD~1",
         "git reset HEAD f.txt",
@@ -274,7 +279,13 @@ class DirtyTreeGuard(Repos):
         "git log --oneline -- restore.py",
         "echo checkout",
     ]
-    DROPS_A_STASH = ["git stash drop", "git stash clear", "git stash drop stash@{0}"]
+    NEVER = [
+        "git stash drop",
+        "git stash clear",
+        "git stash drop stash@{0}",
+        "git clean -fdx",
+        "git clean -f -X",
+    ]
 
     def dirty(self) -> str:
         (Path(self.unreviewed) / "edit.txt").write_text("uncommitted\n")
@@ -297,9 +308,9 @@ class DirtyTreeGuard(Repos):
             with self.subTest(command):
                 self.assertEqual(run_hook(DIRTY_GUARD, command, repo), ALLOW)
 
-    def test_never_lets_a_stash_be_dropped(self) -> None:
-        # After `git stash` the tree is clean, so a dirty-tree rule would let it go.
-        for command in self.DROPS_A_STASH:
+    def test_refuses_what_no_commit_holds_even_on_a_clean_tree(self) -> None:
+        # A stash, and ignored files: neither makes the tree dirty.
+        for command in self.NEVER:
             with self.subTest(command):
                 self.assertEqual(run_hook(DIRTY_GUARD, command, self.unreviewed), BLOCK)
 

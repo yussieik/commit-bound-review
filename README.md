@@ -9,7 +9,8 @@ code rather than in the instructions the agent reads:
    command needs the same of the checkout it is run from.
 2. **No git command that throws away uncommitted work.** `git checkout .`,
    `git restore`, `git reset --hard`, `git clean -f` and `git switch -f` are
-   refused while the tree has uncommitted changes; dropping a stash is refused
+   refused while the tree has uncommitted changes; dropping a stash and
+   `git clean -x` (which deletes ignored files such as `.env`) are refused
    always.
 
 For Claude Code (PreToolUse hooks) and git. Python 3.9+ and bash, no
@@ -63,7 +64,7 @@ flowchart LR
 | `bin/mark-reviewed` | at the end of your review | Writes HEAD's hash to `.claude/.review-passed`. Refuses on a dirty tree. |
 | `hooks/review_guard.py` | before each Bash call of the agent | Early stop: a line that pushes to `main`, runs a deploy workflow, or pushes with git's hooks switched off is refused unless the marker is HEAD. |
 | `githooks/pre-push` | in git, before every push | The exact check: git passes the hash being pushed, and it must be the marker's. |
-| `hooks/dirty_tree_guard.py` | before each Bash call of the agent | Refuses the commands of rule 2. `checkout -b`, `restore --staged`, `clean -n`, a plain `switch` and everything else pass. |
+| `hooks/dirty_tree_guard.py` | before each Bash call of the agent | Refuses the commands of rule 2. `checkout -b`, `checkout --ours/--theirs`, `restore --staged`, `clean -n`, a plain `switch` and everything else pass. |
 
 There are two guards on a push because they know different things. The hook
 in the agent sees only the text of a command, so it can stop early and explain
@@ -91,7 +92,9 @@ git config core.hooksPath githooks      # once per clone
 
 `core.hooksPath` replaces `.git/hooks` for this clone. If you already have
 hooks there or use a hook manager (husky, lefthook, pre-commit), call
-`githooks/pre-push` from your existing pre-push hook instead of setting it.
+`githooks/pre-push` from your existing pre-push hook instead of setting it,
+and pass it the hook's arguments and standard input: git lists the pushed
+commits there.
 
 Commit the copied files: `bin/mark-reviewed` refuses a tree with uncommitted
 changes, these included.
@@ -122,7 +125,9 @@ To change the branch or what counts as a deploy, edit `BRANCH` and
 `githooks/pre-push`. By default a deploy is a line that names a workflow
 containing "deploy" and says `workflow ... run` or `dispatches`. Add your
 workflow's numeric ID to `DEPLOY_NAME` if it can be run by ID, and any other
-command that ships (`make deploy`, `fly deploy`) if you have one.
+command that ships (`make deploy`, `fly deploy`) if you have one. Re-running
+an earlier deploy run (`gh run rerun <id>`) is not seen: the line names no
+workflow.
 
 ## What it does not do
 
@@ -152,8 +157,11 @@ command that ships (`make deploy`, `fly deploy`) if you have one.
 - **The dirty-tree guard checks the session's own directory,** and reads the
   words of the line as written. A line that first moves to another repository
   is judged by the wrong tree, and a command built at run time is not seen.
-  `git checkout other-branch` is refused on a dirty tree although git itself
-  would carry the changes over or stop; commit first.
+  Neither are other ways to lose work: `git rm -f`, `git checkout-index -f`,
+  `git apply -R`, an alias. It over-blocks a little too: `git checkout
+  other-branch` is refused on a dirty tree although git itself would carry the
+  changes over or stop, and so is a line of prose that reads like one of the
+  commands (`echo git checkout . is dangerous`, or a heredoc saying so).
 
 ## Why one guard reads text and the other parses
 
@@ -185,8 +193,8 @@ python3 -m unittest discover tests -v
   more commit
 - real pushes through `githooks/pre-push`, including the bare `git push` the
   text guard cannot see
-- 28 destructive forms refused on a dirty tree and allowed on a clean one, and
-  19 harmless ones allowed on a dirty tree
+- 30 destructive forms refused on a dirty tree and allowed on a clean one, 21
+  harmless ones allowed on a dirty tree, and 5 refused even on a clean tree
 
 ## License
 

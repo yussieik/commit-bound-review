@@ -53,7 +53,7 @@ PUSH = re.compile(
 )
 # A push that skips githooks/pre-push. `-n` is --dry-run for push, not this.
 PUSH_UNCHECKED = re.compile(
-    r"\bgit\b[^\n;&|]*\bpush\b[^\n;&|]*--no-verify\b|hookspath[^\n;&|]*\bpush\b",
+    r"\bgit\b[^\n;&|]*\bpush\b[^\n;&|]*--no-verify\b|hookspath[^\n;&|]*(?<![\w-])push\b",
     re.IGNORECASE,
 )
 # Backslashes and quotes (`$'..'` and `$".."` too), which the shell drops
